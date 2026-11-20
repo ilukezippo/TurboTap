@@ -359,12 +359,17 @@ def service_running(name):
     return running
 
 
+VGAMEPAD_ERROR = ""
+
+
 def vgamepad_installed():
+    global VGAMEPAD_ERROR
     if FROZEN:
         try:
             import vgamepad  # noqa: F401
             return True
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            VGAMEPAD_ERROR = f"{type(e).__name__}: {e}"
             return False
     importlib.invalidate_caches()
     return has_module("vgamepad")
@@ -2969,6 +2974,8 @@ def _selftest_finish(app):
             f.write(f"{k}={'ok' if v else 'FAIL'}\n")
         if app.reader.error:
             f.write(f"sdl_error={app.reader.error}\n")
+        if VGAMEPAD_ERROR:
+            f.write(f"vgamepad_error={VGAMEPAD_ERROR}\n")
     app.on_close()
 
 
