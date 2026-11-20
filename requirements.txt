@@ -1,0 +1,5 @@
+pynput
+pysdl2
+pysdl2-dll
+sv-ttk
+vgamepad

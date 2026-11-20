@@ -1,0 +1,108 @@
+name: Build TurboTap
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["*.md", "shots/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # lets the workflow create the release + tag
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path TurboTap.pyw -Pattern '^APP_VERSION = "(.+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        env:
+          # vgamepad would otherwise try to run the ViGEmBus driver installer on the build machine
+          VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"
+          # build PyInstaller's launcher from source: fewer antivirus false positives than the stock one
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pip install --no-binary pyinstaller pyinstaller
+
+      - name: Build TurboTap.exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --name TurboTap
+          --icon assets/TurboTap.ico --version-file version_info.txt
+          --collect-submodules pynput --collect-all sdl2dll --collect-data sv_ttk --collect-all vgamepad
+          TurboTap.pyw
+
+      - name: Self-test (exe starts, loads SDL / vgamepad / theme / hooks, then quits)
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\selftest.txt"
+          $env:TURBOTAP_SELFTEST = $out
+          $p = Start-Process dist/TurboTap.exe -PassThru
+          if (-not $p.WaitForExit(60000)) { Stop-Process -Id $p.Id -Force; Write-Error "TurboTap.exe did not quit"; exit 1 }
+          Get-Content $out
+          if ((Get-Content $out -Raw) -match "FAIL|crash") { Write-Error "self-test failed"; exit 1 }
+          Get-Item dist/TurboTap.exe | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TurboTap-${{ steps.ver.outputs.version }}
+          path: dist/TurboTap.exe
+          retention-days: 14
+
+      - name: Check whether this version is already released
+        id: exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.ver.outputs.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.ver.outputs.version }} already exists - bump APP_VERSION to publish a new release"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release notes (from CHANGELOG.md)
+        if: steps.exists.outputs.released == 'false'
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          {
+            echo "**Hold a button. TurboTap taps it for you.** Rapid-fire for keyboard, mouse and game controller on Windows."
+            echo
+            echo "**Download:** \`TurboTap.exe\` below - just run it, nothing to install. Requires Windows 10 or 11, 64-bit."
+            echo
+            echo "TurboTap isn't code-signed yet, so Windows may warn: if SmartScreen appears choose *More info → Run anyway*; if Edge holds the download choose *… → Keep → Show more → Keep anyway*."
+            echo
+            echo "## What's new in $VERSION"
+            awk -v head="## $VERSION" 'index($0, head) == 1 {on = 1; next} /^## / {if (on) exit} on' CHANGELOG.md
+          } > release_notes.md
+          cat release_notes.md
+
+      - name: Release
+        if: github.ref == 'refs/heads/main' && steps.exists.outputs.released == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: TurboTap ${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body_path: release_notes.md
+          files: dist/TurboTap.exe
