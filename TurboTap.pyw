@@ -359,18 +359,10 @@ def service_running(name):
     return running
 
 
-VGAMEPAD_ERROR = ""
-
-
 def vgamepad_installed():
-    global VGAMEPAD_ERROR
-    if FROZEN:
-        try:
-            import vgamepad  # noqa: F401
-            return True
-        except Exception as e:  # noqa: BLE001
-            VGAMEPAD_ERROR = f"{type(e).__name__}: {e}"
-            return False
+    if FROZEN:  # bundled into TurboTap.exe (importing it needs the ViGEmBus driver, so just check the files)
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        return os.path.exists(os.path.join(base, "vgamepad", "win", "vigem", "client", "x64", "ViGEmClient.dll"))
     importlib.invalidate_caches()
     return has_module("vgamepad")
 
@@ -1023,8 +1015,15 @@ class Engine:
         try:
             importlib.invalidate_caches()
             import vgamepad as vg
-        except Exception:  # noqa: BLE001
+        except ImportError:
             self.pad_status = "Controller library isn't installed - see 'One-time setup' below."
+            return
+        except Exception as e:  # noqa: BLE001  (vgamepad connects to ViGEmBus as soon as it's imported)
+            if "BUS_NOT_FOUND" in str(e):
+                self.pad_status = ("The ViGEmBus driver isn't running - install it below "
+                                   "(or restart your PC if you just installed it).")
+            else:
+                self.pad_status = f"Couldn't start the virtual controller: {e}"
             return
         reader = self.reader
         src = None
@@ -2974,8 +2973,7 @@ def _selftest_finish(app):
             f.write(f"{k}={'ok' if v else 'FAIL'}\n")
         if app.reader.error:
             f.write(f"sdl_error={app.reader.error}\n")
-        if VGAMEPAD_ERROR:
-            f.write(f"vgamepad_error={VGAMEPAD_ERROR}\n")
+
     app.on_close()
 
 
